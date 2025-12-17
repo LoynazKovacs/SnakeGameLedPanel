@@ -13,7 +13,7 @@ public:
         uint8_t brightness;      // Display brightness (0-255)
         uint8_t gameSpeed;        // Game speed multiplier (1-5)
         uint8_t soundEnabled;     // Sound enabled (0 or 1)
-        uint8_t reserved[5];      // Reserved for future settings
+        uint8_t reserved[5];      // Reserved for future settings (reserved[0] = playerColorIndex)
         uint8_t checksum;         // Simple checksum for validation
     };
     
@@ -21,6 +21,23 @@ public:
     static const uint8_t DEFAULT_BRIGHTNESS = 200;  // Higher default brightness
     static const uint8_t DEFAULT_GAME_SPEED = 1;
     static const uint8_t DEFAULT_SOUND_ENABLED = 0;
+
+    // -----------------------------------------------------
+    // Player Color (persisted)
+    // -----------------------------------------------------
+    // NOTE: We intentionally store this in reserved[0] so older EEPROM layouts
+    // remain compatible and checksums remain valid (reserved bytes were already
+    // part of the checksum).
+    static const uint8_t DEFAULT_PLAYER_COLOR_INDEX = 0;
+
+    // Palette of "player" colors that look good on a HUB75 RGB565 panel.
+    // Keep this list small and high-contrast to avoid muddy colors at lower brightness.
+    static const uint8_t PLAYER_COLOR_COUNT = 8;
+
+    // NOTE: These arrays are defined in `Settings.cpp` to satisfy the linker
+    // on Arduino/ESP32 (where headers are compiled as separate translation units).
+    static const uint16_t PLAYER_COLORS[PLAYER_COLOR_COUNT];
+    static const char* const PLAYER_COLOR_NAMES[PLAYER_COLOR_COUNT];
     
     SettingsData data;
     
@@ -89,6 +106,7 @@ public:
         for (int i = 0; i < 5; i++) {
             data.reserved[i] = 0;
         }
+        data.reserved[0] = DEFAULT_PLAYER_COLOR_INDEX;
     }
     
     /**
@@ -147,6 +165,34 @@ public:
      */
     void setSoundEnabled(bool enabled) {
         data.soundEnabled = enabled ? 1 : 0;
+    }
+
+    // -----------------------------------------------------
+    // Player color accessors (persisted via reserved[0])
+    // -----------------------------------------------------
+    uint8_t getPlayerColorIndex() const {
+        // Always clamp to valid palette range.
+        return (uint8_t)(data.reserved[0] % PLAYER_COLOR_COUNT);
+    }
+
+    void setPlayerColorIndex(uint8_t index) {
+        data.reserved[0] = (uint8_t)(index % PLAYER_COLOR_COUNT);
+    }
+
+    void cyclePlayerColor(int delta = 1) {
+        const int count = (int)PLAYER_COLOR_COUNT;
+        int idx = (int)getPlayerColorIndex();
+        idx = (idx + delta) % count;
+        if (idx < 0) idx += count;
+        setPlayerColorIndex((uint8_t)idx);
+    }
+
+    uint16_t getPlayerColor() const {
+        return PLAYER_COLORS[getPlayerColorIndex()];
+    }
+
+    const char* getPlayerColorName() const {
+        return PLAYER_COLOR_NAMES[getPlayerColorIndex()];
     }
 };
 

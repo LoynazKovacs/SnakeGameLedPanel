@@ -13,12 +13,14 @@
 #include "DisplayPresent.h"
 #include "ControllerManager.h"
 #include "SnakeGame.h"
+#include "TronGame.h"
 #include "PongGame.h"
 #include "BreakoutGame.h"
 #include "ShooterGame.h"
 #include "LabyrinthGame.h"
 #include "TetrisGame.h"
 #include "EmojisGame.h"
+#include "AsteroidsGame.h"
 #include "Menu.h"
 #include "Settings.h"
 #include "SettingsMenu.h"
@@ -70,6 +72,9 @@ enum AppState {
 };
 
 AppState currentState = STATE_NO_CONTROLLER;
+// When controllers disconnect, we show the NO_CONTROLLER screen, but we keep the
+// previous state so we can resume (especially important for in-progress games).
+AppState resumeStateAfterController = STATE_MENU;
 
 // ---------------------------------------------------------
 // Setup
@@ -187,10 +192,15 @@ void loop() {
     // Display "Connect Controller" screen until a device connects.
     case STATE_NO_CONTROLLER:
       if (globalControllerManager->getConnectedCount() > 0) {
-        // Transition to Menu
-        currentState = STATE_MENU;
+        // Resume the previous state (menu/settings/game).
+        // If we were in a game but it was deleted (or never started), fall back to menu.
+        if (resumeStateAfterController == STATE_GAME_RUNNING && currentGame == nullptr) {
+          resumeStateAfterController = STATE_MENU;
+        }
+        currentState = resumeStateAfterController;
         dma_display->clearScreen();
-        forceMenuRender = true;
+        if (currentState == STATE_GAME_RUNNING) forceGameRender = true;
+        else forceMenuRender = true;
       } else {
         // Render waiting screen with small font
         static unsigned long lastFrame = 0;
@@ -210,11 +220,12 @@ void loop() {
     case STATE_MENU:
       // If all controllers disconnect, go back to waiting
       if (globalControllerManager->getConnectedCount() == 0) {
+        resumeStateAfterController = STATE_MENU;
         currentState = STATE_NO_CONTROLLER;
       } else {
         // Draw Menu (capped FPS to reduce scanline/tearing artifacts)
         if (shouldRenderNow(nowMs, lastMenuRenderMs, menuIntervalMs, forceMenuRender)) {
-          menu.draw(dma_display, globalControllerManager->getConnectedCount());
+          menu.draw(dma_display, globalControllerManager);
           presentFrame(dma_display);
         }
 
@@ -224,7 +235,7 @@ void loop() {
           // Valid selection made
           int players = globalControllerManager->getConnectedCount();
           
-          if (gameSelection == 7) {  // Settings
+          if (gameSelection == (Menu::NUM_OPTIONS - 1)) {  // Settings (last option)
             currentState = STATE_SETTINGS;
             settingsMenu.selected = 0;
             dma_display->clearScreen();
@@ -236,25 +247,33 @@ void loop() {
               case 0:  // Snake
                 currentGame = new SnakeGame();
                 break;
-              case 1:  // Pong
+              case 1:  // Tron
+                currentGame = new TronGame();
+                break;
+              case 2:  // Pong
                 currentGame = new PongGame();
                 break;
-              case 2:  // Breakout
+              case 3:  // Breakout
                 currentGame = new BreakoutGame();
                 break;
-              case 3:  // Shooter
+              case 4:  // Shooter
                 currentGame = new ShooterGame();
                 break;
-              case 4:  // Labyrinth
+              case 5:  // Labyrinth
                 currentGame = new LabyrinthGame();
                 break;
-              case 5:  // Tetris (only visible with 1 player)
+              case 6:  // Tetris (only visible with 1 player)
                 if (players == 1) {
                   currentGame = new TetrisGame();
                 }
                 break;
-              case 6:  // Emojis
+              case 7:  // Emojis
                 currentGame = new EmojisGame();
+                break;
+              case 8:  // Asteroids (only visible with 1 player)
+                if (players == 1) {
+                  currentGame = new AsteroidsGame();
+                }
                 break;
               default:
                 currentGame = nullptr;
@@ -275,11 +294,12 @@ void loop() {
     case STATE_SETTINGS:
       // If all controllers disconnect, go back to waiting
       if (globalControllerManager->getConnectedCount() == 0) {
+        resumeStateAfterController = STATE_SETTINGS;
         currentState = STATE_NO_CONTROLLER;
       } else {
         // Draw Settings Menu (capped FPS)
         if (shouldRenderNow(nowMs, lastMenuRenderMs, menuIntervalMs, forceMenuRender)) {
-          settingsMenu.draw(dma_display);
+          settingsMenu.draw(dma_display, globalControllerManager);
           presentFrame(dma_display);
         }
         
@@ -300,11 +320,10 @@ void loop() {
     case STATE_GAME_RUNNING:
       // Safety check for disconnects
       if (globalControllerManager->getConnectedCount() == 0) {
+        // IMPORTANT: Do NOT delete the current game. We want to resume when the
+        // controller comes back.
+        resumeStateAfterController = STATE_GAME_RUNNING;
         currentState = STATE_NO_CONTROLLER;
-        if (currentGame) {
-          delete currentGame;
-          currentGame = nullptr;
-        }
       } else {
         if (currentGame) {
           // Update per-game render pacing (some games prefer lower FPS).

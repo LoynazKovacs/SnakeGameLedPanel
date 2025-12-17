@@ -51,6 +51,7 @@
 // =======================================================
 #define MAX_GAMEPADS 4
 #define SNAKE_SPEED_MS 100
+#define TRON_SPEED_MS 80
 #define GRID_SIZE 1
 
 // RGB565 Colors

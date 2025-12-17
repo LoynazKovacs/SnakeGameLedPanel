@@ -1,9 +1,11 @@
 #pragma once
 #include <Arduino.h>
+#include <math.h>
 #include <vector>
 #include "GameBase.h"
 #include "config.h"
 #include "SmallFont.h"
+#include "Settings.h"
 
 // Game canvas configuration: reserve top space for HUD
 static const int HUD_HEIGHT = 8;  // Space reserved at top for score/player info
@@ -56,6 +58,8 @@ public:
     Direction nextDir;
     uint16_t color;
     bool alive;
+    bool dying;
+    uint32_t deathStartMs;
     int score;
     int playerIndex;
 
@@ -72,17 +76,65 @@ public:
         dir = UP;
         nextDir = UP;
         alive = true;
+        dying = false;
+        deathStartMs = 0;
         score = 0;
+    }
+
+    // Bluepad32 analog helper (SFINAE) so we don't hard-depend on a single API surface.
+    struct InputDetail {
+        template <typename T>
+        static auto axisX(T* c, int) -> decltype(c->axisX(), int16_t()) { return (int16_t)c->axisX(); }
+        template <typename T>
+        static int16_t axisX(T*, ...) { return 0; }
+
+        template <typename T>
+        static auto axisY(T* c, int) -> decltype(c->axisY(), int16_t()) { return (int16_t)c->axisY(); }
+        template <typename T>
+        static int16_t axisY(T*, ...) { return 0; }
+    };
+
+    static inline float clampf(float v, float lo, float hi) { return (v < lo) ? lo : (v > hi) ? hi : v; }
+    static inline float deadzone01(float v, float dz) {
+        const float a = fabsf(v);
+        if (a <= dz) return 0.0f;
+        const float s = (a - dz) / (1.0f - dz);
+        return (v < 0) ? -s : s;
+    }
+
+    static inline bool isOpposite(Direction a, Direction b) {
+        return (a == UP && b == DOWN) || (a == DOWN && b == UP) ||
+               (a == LEFT && b == RIGHT) || (a == RIGHT && b == LEFT);
     }
 
     void handleInput(ControllerPtr ctl) {
         if (!ctl || !ctl->isConnected()) return;
 
-        uint8_t d = ctl->dpad();
-        if ((d & 0x01) && dir != DOWN) nextDir = UP;
-        if ((d & 0x02) && dir != UP) nextDir = DOWN;
-        if ((d & 0x04) && dir != LEFT) nextDir = RIGHT;
-        if ((d & 0x08) && dir != RIGHT) nextDir = LEFT;
+        // Prefer analog stick (dominant axis), fallback to D-pad.
+        static constexpr float STICK_DEADZONE = 0.22f;
+        static constexpr int16_t AXIS_DIVISOR = 512;
+
+        const float ax = clampf((float)InputDetail::axisX(ctl, 0) / (float)AXIS_DIVISOR, -1.0f, 1.0f);
+        const float ay = clampf((float)InputDetail::axisY(ctl, 0) / (float)AXIS_DIVISOR, -1.0f, 1.0f);
+        const float sx = deadzone01(ax, STICK_DEADZONE);
+        const float sy = deadzone01(ay, STICK_DEADZONE);
+
+        Direction desired = NONE;
+        if (sx != 0.0f || sy != 0.0f) {
+            // Dominant axis to prevent diagonal jitter.
+            if (fabsf(sx) >= fabsf(sy)) desired = (sx < 0) ? LEFT : RIGHT;
+            else desired = (sy < 0) ? UP : DOWN;
+        } else {
+            const uint8_t d = ctl->dpad();
+            if (d & 0x01) desired = UP;
+            else if (d & 0x02) desired = DOWN;
+            else if (d & 0x04) desired = RIGHT;
+            else if (d & 0x08) desired = LEFT;
+        }
+
+        if (desired != NONE && !isOpposite(dir, desired)) {
+            nextDir = desired;
+        }
     }
 
     void move(bool grow) {
@@ -114,12 +166,14 @@ private:
     unsigned long lastMove;
     bool gameOver;
 
-    // When the last snake dies, we flash the screen a few times before showing GAME OVER.
-    bool flashing;
-    bool flashOn;
-    uint8_t flashTogglesRemaining;          // 6 toggles => 3 visible flashes
-    unsigned long lastFlashToggleMs;
-    static const unsigned long FLASH_TOGGLE_MS = 800;
+    // Round flow: countdown on start, per-snake death blink, game over when all are gone.
+    enum Phase : uint8_t { PHASE_COUNTDOWN, PHASE_PLAYING, PHASE_GAME_OVER };
+    Phase phase;
+    uint32_t phaseStartMs;
+    static constexpr uint16_t COUNTDOWN_MS = 3000;
+
+    static constexpr uint16_t DEATH_BLINK_TOTAL_MS = 900;
+    static constexpr uint16_t DEATH_BLINK_PERIOD_MS = 120;
 
     uint16_t playerColors[4] = {
         COLOR_GREEN, COLOR_CYAN, COLOR_ORANGE, COLOR_PURPLE
@@ -155,10 +209,8 @@ public:
     SnakeGame() {
         lastMove = 0;
         gameOver = false;
-        flashing = false;
-        flashOn = false;
-        flashTogglesRemaining = 0;
-        lastFlashToggleMs = 0;
+        phase = PHASE_COUNTDOWN;
+        phaseStartMs = 0;
     }
 
     /**
@@ -178,11 +230,14 @@ public:
     void start() override {
         snakes.clear();
         gameOver = false;
-        flashing = false;
-        flashOn = false;
-        flashTogglesRemaining = 0;
-        lastMove = millis();
+        phase = PHASE_COUNTDOWN;
+        phaseStartMs = millis();
+        lastMove = phaseStartMs;
         foods.clear();
+
+        // Apply current global player color for Player 1 (pad index 0).
+        // This allows changing the color in the main menu and having it reflect here.
+        playerColors[0] = globalSettings.getPlayerColor();
 
         // Create snakes first so food never spawns on top of a snake on round start.
         for (int i = 0; i < MAX_GAMEPADS; i++) {
@@ -206,24 +261,34 @@ public:
 
     void update(ControllerManager* input) override {
         if (gameOver) return;
+        const uint32_t now = millis();
 
-        // Flash sequence after the last snake dies: freeze the last frame and blink.
-        if (flashing) {
-            unsigned long now = millis();
-            if (now - lastFlashToggleMs >= FLASH_TOGGLE_MS) {
-                lastFlashToggleMs = now;
-                flashOn = !flashOn;
-                if (flashTogglesRemaining > 0) flashTogglesRemaining--;
-                if (flashTogglesRemaining == 0) {
-                    flashing = false;
-                    gameOver = true;
-                }
+        // Cleanup finished death animations (remove corpse)
+        for (auto& s : snakes) {
+            if (s.dying && (uint32_t)(now - s.deathStartMs) >= DEATH_BLINK_TOTAL_MS) {
+                s.dying = false;
+                s.body.clear();
+            }
+        }
+
+        // Countdown before starting movement (still accept input so players can buffer a direction)
+        if (phase == PHASE_COUNTDOWN) {
+            for (auto& s : snakes) {
+                if (!s.alive) continue;
+                ControllerPtr ctl = input->getController(s.playerIndex);
+                if (ctl) s.handleInput(ctl);
+            }
+            if ((uint32_t)(now - phaseStartMs) >= COUNTDOWN_MS) {
+                phase = PHASE_PLAYING;
+                lastMove = now;
             }
             return;
         }
 
-        if (millis() - lastMove < SNAKE_SPEED_MS) return;
-        lastMove = millis();
+        if (phase == PHASE_GAME_OVER) return;
+
+        if ((uint32_t)(now - lastMove) < (uint32_t)SNAKE_SPEED_MS) return;
+        lastMove = now;
 
         // -------------------------------------------------------------
         // Multiplayer-correct movement:
@@ -248,6 +313,8 @@ public:
             ControllerPtr ctl = input->getController(s.playerIndex);
             if (!ctl) {
                 s.alive = false;
+                s.dying = true;
+                s.deathStartMs = now;
                 continue;
             }
 
@@ -352,6 +419,8 @@ public:
 
             if (collision[i]) {
                 s.alive = false;
+                s.dying = true;
+                s.deathStartMs = now;
                 continue;
             }
 
@@ -368,23 +437,18 @@ public:
         }
 
         bool anyAlive = false;
-        for (auto& s : snakes) if (s.alive) anyAlive = true;
-        if (!anyAlive && !snakes.empty()) {
-            // Start flash sequence (3 flashes) before showing GAME OVER.
-            flashing = true;
-            flashOn = false;
-            flashTogglesRemaining = 6;
-            lastFlashToggleMs = millis();
+        bool anyDying = false;
+        for (auto& s : snakes) {
+            if (s.alive) anyAlive = true;
+            if (s.dying) anyDying = true;
+        }
+        if (!anyAlive && !anyDying && !snakes.empty()) {
+            phase = PHASE_GAME_OVER;
+            gameOver = true;
         }
     }
 
     void draw(MatrixPanel_I2S_DMA* display) override {
-        // During flashing, alternate between a full white frame and the frozen last frame.
-        if (flashing && flashOn) {
-            display->fillScreen(COLOR_BLACK);
-            return;
-        }
-
         display->fillScreen(COLOR_BLACK);
 
         if (gameOver) {
@@ -406,6 +470,9 @@ public:
         char pbuf[8];
         snprintf(pbuf, sizeof(pbuf), "%dP", (int)snakes.size());
         SmallFont::drawString(display, PANEL_RES_X - 14, hudY, pbuf, COLOR_YELLOW);
+
+        // HUD divider
+        for (int x = 0; x < PANEL_RES_X; x += 2) display->drawPixel(x, HUD_HEIGHT - 1, COLOR_BLUE);
 
         // Playfield border (inset to avoid using edge pixels)
         display->drawRect(PLAYFIELD_BORDER_X, PLAYFIELD_BORDER_Y, PLAYFIELD_BORDER_W, PLAYFIELD_BORDER_H, COLOR_WHITE);
@@ -436,12 +503,30 @@ public:
 
         // Draw snakes (offset by HUD height)
         for (auto& s : snakes) {
-            if (!s.alive) continue;
+            // Alive snakes draw always. Dead snakes blink for a short time, then disappear.
+            bool drawSnake = s.alive;
+            if (!drawSnake && s.dying) {
+                const uint32_t now = millis();
+                if ((uint32_t)(now - s.deathStartMs) < DEATH_BLINK_TOTAL_MS) {
+                    drawSnake = (((now / DEATH_BLINK_PERIOD_MS) % 2) == 0);
+                }
+            }
+            if (!drawSnake) continue;
             for (auto& p : s.body) {
                 int px = PLAYFIELD_CONTENT_X + p.x * PIXEL_SIZE;
                 int py = PLAYFIELD_CONTENT_Y + p.y * PIXEL_SIZE;
                 fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, s.color);
             }
+        }
+
+        // Countdown overlay (during round start)
+        if (phase == PHASE_COUNTDOWN) {
+            const uint32_t now = millis();
+            const uint32_t elapsed = (uint32_t)(now - phaseStartMs);
+            int secsLeft = 3 - (int)(elapsed / 1000UL);
+            if (secsLeft < 1) secsLeft = 1;
+            char c[2] = { (char)('0' + secsLeft), '\0' };
+            SmallFont::drawString(display, 30, 30, c, COLOR_YELLOW);
         }
     }
 
