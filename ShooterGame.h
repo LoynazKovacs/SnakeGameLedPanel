@@ -506,11 +506,24 @@ private:
             // Keep within vertical band; if it sinks too far, push up and speed up slightly.
             if (e.y < minY) e.y = minY;
             if (e.y > maxY) {
-                // Reaching the player zone counts as a hit.
-                const bool shield = ((int32_t)(shieldUntilMs - now) > 0);
-                if (!shield) loseLife(now);
-                // Reset this enemy so it doesn't chain-hit.
+                // Contact with the player zone:
+                // - If we have a shield: enemy explodes, shield drops one tier.
+                // - If we don't: enemy explodes, player loses one life.
+                const bool shieldActive = ((int32_t)(shieldUntilMs - now) > 0) && shieldTier > 0;
+                spawnExplosion((int)e.x + 1, (int)e.y + 1, ENEMY_COLORS[e.type & 3], now);
                 e.alive = false;
+
+                if (shieldActive) {
+                    shieldHitFlashUntilMs = now + 180;
+                    if (shieldTier > 0) {
+                        shieldTier--;
+                        if (shieldTier == 0) shieldUntilMs = 0;
+                    }
+                } else {
+                    loseLife(now);
+                    // Small player feedback explosion (enemy already exploded).
+                    spawnExplosion((int)player.x + 2, player.y + 2, COLOR_ORANGE, now);
+                }
                 continue;
             }
 

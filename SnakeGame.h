@@ -54,6 +54,26 @@ struct Point {
     int y;
 };
 
+// Food/creature types for Nokia Snake 2 style sprites (but keep our project palette).
+// NOTE: All foods are rendered as pixel-art sprites and use explicit hitboxes.
+enum FoodKind : uint8_t {
+    FOOD_APPLE = 0,        // 2x2-cell apple sprite
+    FOOD_MOUSE = 1,
+    FOOD_FROG  = 2,
+    FOOD_BIRD  = 3,
+    FOOD_FISH  = 4,
+    FOOD_BUG   = 5
+};
+
+struct FoodItem {
+    // Top-left of the hitbox in LOGICAL (cell) coordinates.
+    Point p;
+    FoodKind kind;
+    uint8_t wCells;
+    uint8_t hCells;
+    uint32_t expireMs; // 0 = never expires
+};
+
 class Snake {
 public:
     std::vector<Point> body;
@@ -65,6 +85,10 @@ public:
     uint32_t deathStartMs;
     int score;
     int playerIndex;
+
+    // Nokia-style "digesting bulge": when the snake eats, a bright segment travels down the body.
+    // bulgeIndex is the segment index in `body` (0=head). -1 means no bulge active.
+    int bulgeIndex;
 
     Snake(int idx, int x, int y, uint16_t c) {
         playerIndex = idx;
@@ -82,6 +106,7 @@ public:
         dying = false;
         deathStartMs = 0;
         score = 0;
+        bulgeIndex = -1;
     }
 
     // Bluepad32 analog helper (SFINAE) so we don't hard-depend on a single API surface.
@@ -165,7 +190,7 @@ public:
 class SnakeGame : public GameBase {
 private:
     std::vector<Snake> snakes;
-    std::vector<Point> foods;
+    std::vector<FoodItem> foods;
     unsigned long lastMove;
     bool gameOver;
 
@@ -182,27 +207,102 @@ private:
         COLOR_GREEN, COLOR_CYAN, COLOR_ORANGE, COLOR_PURPLE
     };
 
-    void spawnFood() {
+    static inline int pointsForFood(FoodKind k) {
+        switch (k) {
+            case FOOD_APPLE: return 10;
+            case FOOD_MOUSE: return 20;
+            case FOOD_FROG:  return 25;
+            case FOOD_BIRD:  return 30;
+            case FOOD_FISH:  return 35;
+            case FOOD_BUG:   return 40;
+            default: return 10;
+        }
+    }
+
+    static inline uint32_t ttlForFoodMs(FoodKind k) {
+        // Creatures expire; apples don't.
+        if (k == FOOD_APPLE) return 0UL;
+        return 9000UL;
+    }
+
+    static inline FoodKind chooseNextFoodKind() {
+        // Weighted: mostly apples, occasional creatures.
+        const int r = random(0, 100);
+        if (r < 68) return FOOD_APPLE;
+        if (r < 78) return FOOD_MOUSE;
+        if (r < 86) return FOOD_FROG;
+        if (r < 92) return FOOD_BIRD;
+        if (r < 97) return FOOD_FISH;
+        return FOOD_BUG;
+    }
+
+    static inline void foodDims(FoodKind k, uint8_t& w, uint8_t& h) {
+        // Apple is intentionally harder to catch: 1x1 logical cell (2x2 pixels).
+        // Creatures remain 2x2 logical cells (4x4 pixels).
+        if (k == FOOD_APPLE) {
+            w = 1;
+            h = 1;
+            return;
+        }
+        w = 2;
+        h = 2;
+    }
+
+    static inline uint16_t foodColor(FoodKind k) {
+        // Palette request:
+        // - Apples red
+        // - Other creatures can be any color
+        switch (k) {
+            case FOOD_APPLE: return COLOR_RED;
+            case FOOD_MOUSE: return COLOR_ORANGE;
+            case FOOD_FROG:  return COLOR_GREEN;
+            case FOOD_BIRD:  return COLOR_YELLOW;
+            case FOOD_FISH:  return COLOR_CYAN;
+            case FOOD_BUG:   return COLOR_PURPLE;
+            default: return COLOR_RED;
+        }
+    }
+
+    static inline bool pointInFood(const FoodItem& f, const Point& cell) {
+        return (cell.x >= f.p.x && cell.x < f.p.x + (int)f.wCells &&
+                cell.y >= f.p.y && cell.y < f.p.y + (int)f.hCells);
+    }
+
+    void spawnFood(FoodKind kind = FOOD_APPLE) {
         bool ok;
-        Point f;
+        FoodItem f;
         do {
             ok = true;
-            f.x = random(0, LOGICAL_WIDTH);
-            f.y = random(0, LOGICAL_HEIGHT);
+            uint8_t w = 2, h = 2;
+            foodDims(kind, w, h);
+            f.wCells = w;
+            f.hCells = h;
+
+            // Keep within bounds for a multi-cell hitbox.
+            f.p.x = random(0, max(1, LOGICAL_WIDTH - (int)w));
+            f.p.y = random(0, max(1, LOGICAL_HEIGHT - (int)h));
+            f.kind = kind;
+            const uint32_t ttl = ttlForFoodMs(kind);
+            f.expireMs = (ttl == 0) ? 0 : (millis() + ttl);
 
             for (auto& s : snakes) {
                 for (auto& p : s.body) {
-                    if (p.x == f.x && p.y == f.y) {
+                    if (pointInFood(f, p)) {
                         ok = false;
                         break;
                     }
                 }
             }
             for (auto& existing : foods) {
-                if (existing.x == f.x && existing.y == f.y) {
-                    ok = false;
-                    break;
+                // Overlap test.
+                for (int yy = 0; yy < (int)f.hCells; yy++) {
+                    for (int xx = 0; xx < (int)f.wCells; xx++) {
+                        Point c{f.p.x + xx, f.p.y + yy};
+                        if (pointInFood(existing, c)) { ok = false; break; }
+                    }
+                    if (!ok) break;
                 }
+                if (!ok) break;
             }
         } while (!ok);
         foods.push_back(f);
@@ -255,7 +355,7 @@ public:
         }
 
         // Spawn multiple foods after snakes exist (so spawnFood() can avoid them).
-        for (int i = 0; i < 3; i++) spawnFood();
+        for (int i = 0; i < 3; i++) spawnFood(chooseNextFoodKind());
     }
 
     void reset() override {
@@ -265,6 +365,16 @@ public:
     void update(ControllerManager* input) override {
         if (gameOver) return;
         const uint32_t now = millis();
+
+        // Remove expired creature foods (keeps the playfield feeling alive)
+        for (size_t i = 0; i < foods.size();) {
+            if (foods[i].kind != FOOD_APPLE && foods[i].expireMs != 0 && (int32_t)(foods[i].expireMs - now) <= 0) {
+                foods.erase(foods.begin() + (int)i);
+                spawnFood(chooseNextFoodKind());
+            } else {
+                i++;
+            }
+        }
 
         // Cleanup finished death animations (remove corpse)
         for (auto& s : snakes) {
@@ -342,7 +452,7 @@ public:
 
             // Determine if this move would eat food (resolved later)
             for (size_t fi = 0; fi < foods.size(); fi++) {
-                if (foods[fi].x == nh.x && foods[fi].y == nh.y) {
+                if (pointInFood(foods[fi], nh)) {
                     willGrow[i] = true;
                     foodHitIndex[i] = (int)fi;
                     break;
@@ -420,6 +530,12 @@ public:
             s.body.insert(s.body.begin(), nh);
             if (!willGrow[i]) s.body.pop_back();
 
+            // Move any existing bulge "down" the body each tick.
+            if (s.bulgeIndex >= 0) {
+                s.bulgeIndex++;
+                if (s.bulgeIndex >= (int)s.body.size()) s.bulgeIndex = -1;
+            }
+
             if (collision[i]) {
                 s.alive = false;
                 s.dying = true;
@@ -431,10 +547,13 @@ public:
             if (willGrow[i] && foodHitIndex[i] >= 0) {
                 // Re-check that the food still exists at this index (it may have been erased already)
                 const int fi = foodHitIndex[i];
-                if (fi >= 0 && fi < (int)foods.size() && foods[fi].x == nh.x && foods[fi].y == nh.y) {
-                    s.score += 10;
+                if (fi >= 0 && fi < (int)foods.size() && pointInFood(foods[fi], nh)) {
+                    const FoodKind kind = foods[fi].kind;
+                    s.score += pointsForFood(kind);
                     foods.erase(foods.begin() + fi);
-                    spawnFood();
+                    // Start a new bulge right behind the head.
+                    s.bulgeIndex = 1;
+                    spawnFood(chooseNextFoodKind());
                 }
             }
         }
@@ -452,6 +571,12 @@ public:
     }
 
     void draw(MatrixPanel_I2S_DMA* display) override {
+        // Keep our project palette as requested:
+        // - black background
+        // - per-player snake colors
+        // - apples red
+        // - white boundary
+        // - standard HUD
         display->fillScreen(COLOR_BLACK);
 
         if (gameOver) {
@@ -502,14 +627,74 @@ public:
             display->fillRect(x, y, w, h, c);
         };
 
-        // Draw foods (offset by HUD height)
+        auto drawPixelClipped = [&](int x, int y, uint16_t c) {
+            const int minX = PLAYFIELD_CONTENT_X;
+            const int minY = PLAYFIELD_CONTENT_Y;
+            const int maxX = PLAYFIELD_CONTENT_X + PLAYFIELD_CONTENT_W - 1;
+            const int maxY = PLAYFIELD_CONTENT_Y + PLAYFIELD_CONTENT_H - 1;
+            if (x < minX || y < minY || x > maxX || y > maxY) return;
+            display->drawPixel(x, y, c);
+        };
+
+        // Draw foods/creatures.
+        auto drawFoodSprite4x4 = [&](int px, int py, FoodKind kind, uint16_t col) {
+            // Pixel-art inspired by Snake 2, adapted to 4x4 pixels.
+            // 1 = draw pixel
+            static const uint8_t SPR[6][4][4] = {
+                // APPLE (hollow-ish)
+                {{0,1,1,0},
+                 {1,0,0,1},
+                 {1,0,0,1},
+                 {0,1,1,0}},
+                // MOUSE
+                {{1,0,0,1},
+                 {1,1,1,1},
+                 {1,0,0,1},
+                 {0,1,1,0}},
+                // FROG
+                {{1,1,1,1},
+                 {1,0,0,1},
+                 {1,1,1,1},
+                 {1,0,0,1}},
+                // BIRD
+                {{0,1,1,0},
+                 {1,1,1,1},
+                 {0,1,1,1},
+                 {0,0,1,0}},
+                // FISH
+                {{0,1,1,0},
+                 {1,1,1,1},
+                 {1,0,1,0},
+                 {0,1,1,0}},
+                // BUG
+                {{0,1,1,0},
+                 {1,1,1,1},
+                 {1,0,0,1},
+                 {0,1,1,0}},
+            };
+            const uint8_t k = (uint8_t)kind;
+            for (int yy = 0; yy < 4; yy++) {
+                for (int xx = 0; xx < 4; xx++) {
+                    if (!SPR[k][yy][xx]) continue;
+                    drawPixelClipped(px + xx, py + yy, col);
+                }
+            }
+        };
+
         for (auto& f : foods) {
-            int px = PLAYFIELD_CONTENT_X + f.x * PIXEL_SIZE;
-            int py = PLAYFIELD_CONTENT_Y + f.y * PIXEL_SIZE;
-            fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, COLOR_RED);
+            const int px = PLAYFIELD_CONTENT_X + f.p.x * PIXEL_SIZE;
+            const int py = PLAYFIELD_CONTENT_Y + f.p.y * PIXEL_SIZE;
+
+            if (f.kind == FOOD_APPLE) {
+                // Smaller apple: 2x2 pixels (1x1 logical cell) for tighter hitbox.
+                fillRectClipped(px, py, 2, 2, COLOR_RED);
+            } else {
+                // Creatures: 4x4 pixels (2x2 logical cells)
+                drawFoodSprite4x4(px, py, f.kind, foodColor(f.kind));
+            }
         }
 
-        // Draw snakes (offset by HUD height)
+        // Draw snakes (Nokia style: striped body, head/eyes, mouth animation, bulge)
         for (auto& s : snakes) {
             // Alive snakes draw always. Dead snakes blink for a short time, then disappear.
             bool drawSnake = s.alive;
@@ -520,10 +705,118 @@ public:
                 }
             }
             if (!drawSnake) continue;
-            for (auto& p : s.body) {
-                int px = PLAYFIELD_CONTENT_X + p.x * PIXEL_SIZE;
-                int py = PLAYFIELD_CONTENT_Y + p.y * PIXEL_SIZE;
-                fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, s.color);
+
+            // Determine if mouth should be open: if the next move will eat a food hitbox and it's "soon".
+            const uint32_t nowMs = millis();
+            const uint32_t dt = (uint32_t)(nowMs - lastMove);
+            const uint32_t msToMove = (dt >= (uint32_t)SNAKE_SPEED_MS) ? 0u : ((uint32_t)SNAKE_SPEED_MS - dt);
+            bool mouthOpen = false;
+            if (phase == PHASE_PLAYING && msToMove <= 220u && s.alive) {
+                Point nh = s.body.front();
+                Direction d = s.nextDir;
+                if (d == UP) nh.y--;
+                else if (d == DOWN) nh.y++;
+                else if (d == LEFT) nh.x--;
+                else if (d == RIGHT) nh.x++;
+                if (nh.x < 0) nh.x = LOGICAL_WIDTH - 1;
+                else if (nh.x >= LOGICAL_WIDTH) nh.x = 0;
+                if (nh.y < 0) nh.y = LOGICAL_HEIGHT - 1;
+                else if (nh.y >= LOGICAL_HEIGHT) nh.y = 0;
+                for (const auto& f : foods) {
+                    if (pointInFood(f, nh)) { mouthOpen = true; break; }
+                }
+            }
+
+            const uint16_t baseCol = s.color;
+
+            // Lighter stripe color (blend towards white, but keep hue).
+            auto lighten565 = [&](uint16_t c, uint8_t alpha /*0..255*/) -> uint16_t {
+                uint8_t r = (uint8_t)((c >> 11) & 0x1F);
+                uint8_t g = (uint8_t)((c >> 5) & 0x3F);
+                uint8_t b = (uint8_t)(c & 0x1F);
+                r = (uint8_t)(r + ((31 - r) * alpha) / 255);
+                g = (uint8_t)(g + ((63 - g) * alpha) / 255);
+                b = (uint8_t)(b + ((31 - b) * alpha) / 255);
+                return (uint16_t)((r << 11) | (g << 5) | b);
+            };
+            const uint16_t stripeCol = lighten565(baseCol, 110); // ~43% towards white
+
+            for (size_t idx = 0; idx < s.body.size(); idx++) {
+                const Point& p = s.body[idx];
+                const int px = PLAYFIELD_CONTENT_X + p.x * PIXEL_SIZE;
+                const int py = PLAYFIELD_CONTENT_Y + p.y * PIXEL_SIZE;
+
+                // Head
+                if (idx == 0) {
+                    // Base head block
+                    fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, baseCol);
+
+                    // Eyes (2 pixels) based on direction
+                    const uint16_t eye = COLOR_WHITE;
+                    if (s.dir == UP) {
+                        drawPixelClipped(px, py, eye);
+                        drawPixelClipped(px + 1, py, eye);
+                    } else if (s.dir == DOWN) {
+                        drawPixelClipped(px, py + 1, eye);
+                        drawPixelClipped(px + 1, py + 1, eye);
+                    } else if (s.dir == LEFT) {
+                        drawPixelClipped(px, py, eye);
+                        drawPixelClipped(px, py + 1, eye);
+                    } else if (s.dir == RIGHT) {
+                        drawPixelClipped(px + 1, py, eye);
+                        drawPixelClipped(px + 1, py + 1, eye);
+                    }
+
+                    // Mouth animation: draw a small "open jaw" just ahead of the head when about to eat.
+                    if (mouthOpen) {
+                        const int hx = px + 1;
+                        const int hy = py + 1;
+                        if (s.dir == UP) {
+                            drawPixelClipped(hx, hy - 2, COLOR_WHITE);
+                            drawPixelClipped(hx - 1, hy - 2, COLOR_WHITE);
+                        } else if (s.dir == DOWN) {
+                            drawPixelClipped(hx, hy + 2, COLOR_WHITE);
+                            drawPixelClipped(hx - 1, hy + 2, COLOR_WHITE);
+                        } else if (s.dir == LEFT) {
+                            drawPixelClipped(hx - 2, hy, COLOR_WHITE);
+                            drawPixelClipped(hx - 2, hy - 1, COLOR_WHITE);
+                        } else if (s.dir == RIGHT) {
+                            drawPixelClipped(hx + 2, hy, COLOR_WHITE);
+                            drawPixelClipped(hx + 2, hy - 1, COLOR_WHITE);
+                        }
+                    }
+                    continue;
+                }
+
+                // Make the head feel larger by giving it a solid "neck" segment (no stripes).
+                // This extends the head visually by 2px into the body without changing gameplay.
+                if (idx == 1) {
+                    fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, baseCol);
+                    continue;
+                }
+
+                // Bulge segment
+                if (s.bulgeIndex >= 0 && (int)idx == s.bulgeIndex) {
+                    // Bulge is visible by being a SOLID colored segment (no stripes).
+                    fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, baseCol);
+                    continue;
+                }
+
+                // Striped body (Nokia Snake 2 style):
+                // Use stationary diagonal black stripes anchored to the grid position
+                // so they do NOT "crawl" or flicker as the snake moves.
+                fillRectClipped(px, py, PIXEL_SIZE, PIXEL_SIZE, baseCol);
+
+                // Diagonal stripe pattern in the 2x2 tile:
+                // Alternate \ and / based on (cellX + cellY) to create a stable diagonal texture.
+                const bool diagBackslash = (((p.x + p.y) & 1) == 0);
+                if (diagBackslash) {
+                    drawPixelClipped(px, py, stripeCol);
+                    drawPixelClipped(px + 1, py + 1, stripeCol);
+                } else {
+                    drawPixelClipped(px + 1, py, stripeCol);
+                    drawPixelClipped(px, py + 1, stripeCol);
+                }
             }
         }
 
