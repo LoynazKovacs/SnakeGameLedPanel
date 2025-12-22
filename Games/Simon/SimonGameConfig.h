@@ -37,7 +37,7 @@ static constexpr int FACE_CX = 40;
 static constexpr int FACE_CY = 34;
 
 // LB/RB bars at top corners
-static constexpr int SHOULDER_W = 16;
+static constexpr int SHOULDER_W = 24;
 static constexpr int SHOULDER_H = 7;
 static constexpr int SHOULDER_Y = 10;
 static constexpr int SHOULDER_X_PAD = 2;

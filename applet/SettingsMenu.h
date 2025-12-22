@@ -26,6 +26,7 @@ public:
         SETTING_SOUND_VOLUME,
         SETTING_SIMON_DIFFICULTY,
         SETTING_SIMON_LIVES,
+        SETTING_SIMON_SPEED,
         SETTING_RESET,
         SETTING_REBOOT,
         SETTING_ERASE_EEPROM,
@@ -210,7 +211,7 @@ private:
     // Settings list model (static strings + fixed ordering).
     class SettingsListModel : public ListModel {
     public:
-        const char* settingNames[NUM_SETTINGS] = { "Brightness", "Game Speed", "Sound", "Volume", "Simon Diff", "Simon Lives", "Reset", "Reboot", "EraseEEP", "Back" };
+        const char* settingNames[NUM_SETTINGS] = { "Brightness", "Game Speed", "Sound", "Volume", "Simon Diff", "Simon Lives", "Simon Speed", "Reset", "Reboot", "EraseEEP", "Back" };
         int itemCount() const override { return NUM_SETTINGS; }
         const char* label(int actualIndex) const override { return settingNames[actualIndex]; }
     };
@@ -228,30 +229,48 @@ private:
     }
 
     void drawRightValue(MatrixPanel_I2S_DMA* display, int actualIndex, int yPos) {
+        auto drawRight = [&](const char* s) {
+            if (!s) return;
+            // Right-align to screen edge to avoid GFX auto-wrapping when text overflows.
+            // TomThumb is tiny; safe approx is ~4px per character.
+            int len = (int)strlen(s);
+            if (len < 0) len = 0;
+            if (len > 15) len = 15;
+            const int textW = len * 4;
+            int x = PANEL_RES_X - 2 - textW;
+            // Keep a minimum so it doesn't collide too much with labels.
+            if (x < 44) x = 44;
+            SmallFont::drawString(display, x, yPos, s, COLOR_YELLOW);
+        };
+
         if (actualIndex == SETTING_BRIGHTNESS) {
             char val[8];
             snprintf(val, sizeof(val), "%d", globalSettings.getBrightness());
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
         } else if (actualIndex == SETTING_GAME_SPEED) {
             char val[4];
             snprintf(val, sizeof(val), "%d", globalSettings.getGameSpeed());
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
         } else if (actualIndex == SETTING_SOUND) {
             const char* val = globalSettings.isSoundEnabled() ? "ON" : "OFF";
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
         } else if (actualIndex == SETTING_SOUND_VOLUME) {
             // Volume level: 0..10
             char val[4];
             snprintf(val, sizeof(val), "%d", (int)globalSettings.getSoundVolumeLevel());
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
         } else if (actualIndex == SETTING_SIMON_DIFFICULTY) {
             const uint8_t d = globalSettings.getSimonDifficulty();
             const char* val = (d == 0) ? "EASY" : (d == 1) ? "MED" : "HARD";
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
         } else if (actualIndex == SETTING_SIMON_LIVES) {
             char val[4];
             snprintf(val, sizeof(val), "%d", (int)globalSettings.getSimonLives());
-            SmallFont::drawString(display, 50, yPos, val, COLOR_YELLOW);
+            drawRight(val);
+        } else if (actualIndex == SETTING_SIMON_SPEED) {
+            char val[4];
+            snprintf(val, sizeof(val), "%d", (int)globalSettings.getSimonSpeed());
+            drawRight(val);
         }
     }
 
@@ -316,6 +335,13 @@ private:
                 int next = (int)globalSettings.getSimonLives() + delta;
                 next = constrain(next, (int)Settings::SIMON_LIVES_MIN, (int)Settings::SIMON_LIVES_MAX);
                 globalSettings.setSimonLives((uint8_t)next);
+                globalSettings.save();
+                break;
+            }
+            case SETTING_SIMON_SPEED: {
+                int next = (int)globalSettings.getSimonSpeed() + delta;
+                next = constrain(next, (int)Settings::SIMON_SPEED_MIN, (int)Settings::SIMON_SPEED_MAX);
+                globalSettings.setSimonSpeed((uint8_t)next);
                 globalSettings.save();
                 break;
             }

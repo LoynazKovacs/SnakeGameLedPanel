@@ -91,6 +91,9 @@ private:
     uint8_t maxLives = 3;
     uint8_t lives = 3;
 
+    // Per-game speed for sequence display (1..9, higher = faster)
+    uint8_t simonSpeed = 5;
+
     // Sequence and progress
     uint8_t seq[SimonGameConfig::MAX_SEQUENCE] = {};
     uint16_t seqLen = 0;          // current round length
@@ -148,6 +151,16 @@ private:
         if (sp <= 1) return ms;
         const uint32_t scaled = ms / (uint32_t)sp;
         return (scaled < 30) ? 30 : scaled; // avoid too-fast flicker on a buzzer/panel
+    }
+
+    uint32_t simonScaleShowMs(uint32_t ms) const {
+        // User setting: 1..9 (higher = faster)
+        const uint8_t sp = (uint8_t)constrain((int)simonSpeed, (int)Settings::SIMON_SPEED_MIN, (int)Settings::SIMON_SPEED_MAX);
+        // Use 5 as the "neutral" point.
+        // scaled = ms * 5 / sp
+        uint32_t scaled = (ms * 5u) / (uint32_t)max(1, (int)sp);
+        if (scaled < 25) scaled = 25;
+        return scaled;
     }
 
     uint8_t symbolCountForDifficulty() const {
@@ -327,20 +340,25 @@ private:
         if (s == SYM_B) { cx += g; return; }
     }
 
-    static Rect shoulderRect(Symbol s) {
+    Rect shoulderRect(Symbol s) const {
         using namespace SimonGameConfig;
-        if (s == SYM_LB) return { SHOULDER_X_PAD, SHOULDER_Y, SHOULDER_W, SHOULDER_H };
-        if (s == SYM_RB) return { PANEL_RES_X - SHOULDER_X_PAD - SHOULDER_W, SHOULDER_Y, SHOULDER_W, SHOULDER_H };
+        // If Hard mode D-pad side bands are active, keep shoulders inset so labels are not covered.
+        const int inset = DPAD_BAND + 1; // keep clear of left/right 4px band
+        const int pad = (difficulty >= DIFF_HARD) ? max(SHOULDER_X_PAD, inset) : SHOULDER_X_PAD;
+        if (s == SYM_LB) return { pad, SHOULDER_Y, SHOULDER_W, SHOULDER_H };
+        if (s == SYM_RB) return { PANEL_RES_X - pad - SHOULDER_W, SHOULDER_Y, SHOULDER_W, SHOULDER_H };
         return { 0, 0, 0, 0 };
     }
 
     static Rect dpadBandRect(Symbol s) {
         using namespace SimonGameConfig;
         const int t = DPAD_BAND;
-        if (s == SYM_UP) return { 0, 0, PANEL_RES_X, t };
+        // Keep the top HUD band (0..7) clear.
+        const int hudBottom = 8;
+        if (s == SYM_UP) return { 0, hudBottom, PANEL_RES_X, t }; // directly under HUD divider
         if (s == SYM_DOWN) return { 0, PANEL_RES_Y - t, PANEL_RES_X, t };
-        if (s == SYM_LEFT) return { 0, 0, t, PANEL_RES_Y };
-        if (s == SYM_RIGHT) return { PANEL_RES_X - t, 0, t, PANEL_RES_Y };
+        if (s == SYM_LEFT) return { 0, hudBottom, t, PANEL_RES_Y - hudBottom };
+        if (s == SYM_RIGHT) return { PANEL_RES_X - t, hudBottom, t, PANEL_RES_Y - hudBottom };
         return { 0, 0, 0, 0 };
     }
 
@@ -434,8 +452,10 @@ private:
         using namespace SimonGameConfig;
         const int n = (int)maxLives;
         const int totalW = n * HEART_W + (n - 1) * HEART_GAP;
-        const int startX = FACE_CX - totalW / 2;
-        const int y = FACE_CY - 2;
+        // Place into the top HUD band (above the dotted divider at y=7).
+        // Keep 1px top margin.
+        const int startX = (PANEL_RES_X / 2) - (totalW / 2);
+        const int y = 1;
         for (int i = 0; i < n; i++) {
             const bool on = (i < (int)lives);
             drawHeart(d, startX + i * (HEART_W + HEART_GAP), y, on);
@@ -475,7 +495,7 @@ private:
 
         // Shoulder: expanding rect outline.
         if (pulse.sym == SYM_LB || pulse.sym == SYM_RB) {
-            Rect r = shoulderRect(pulse.sym);
+            Rect r = this->shoulderRect(pulse.sym);
             const int pad = 1 + step;
             d->drawRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, col);
             return;
@@ -497,6 +517,7 @@ public:
         difficulty = (Difficulty)globalSettings.getSimonDifficulty();
         maxLives = globalSettings.getSimonLives();
         lives = maxLives;
+        simonSpeed = globalSettings.getSimonSpeed();
         randomSeed((uint32_t)micros() ^ (uint32_t)millis());
         startNewRun((uint32_t)millis());
     }
@@ -537,8 +558,8 @@ public:
             }
 
             case PHASE_SHOW: {
-                const uint16_t onMs = (uint16_t)speedScaleMs(SimonGameConfig::SHOW_ON_MS[(uint8_t)difficulty]);
-                const uint16_t offMs = (uint16_t)speedScaleMs(SimonGameConfig::SHOW_OFF_MS[(uint8_t)difficulty]);
+                const uint16_t onMs = (uint16_t)simonScaleShowMs(SimonGameConfig::SHOW_ON_MS[(uint8_t)difficulty]);
+                const uint16_t offMs = (uint16_t)simonScaleShowMs(SimonGameConfig::SHOW_OFF_MS[(uint8_t)difficulty]);
 
                 if ((int32_t)(now - nextStepMs) < 0) break;
 
@@ -654,7 +675,7 @@ public:
         uint8_t inten = 255;
         if (phase == PHASE_SHOW && activeSym != SYM_NONE) {
             // Triangle wave: low->high->low over the ON window.
-            const uint32_t onMs = (uint32_t)speedScaleMs(SimonGameConfig::SHOW_ON_MS[(uint8_t)difficulty]);
+            const uint32_t onMs = (uint32_t)simonScaleShowMs(SimonGameConfig::SHOW_ON_MS[(uint8_t)difficulty]);
             const uint32_t start = (uint32_t)(activeUntilMs - onMs);
             const uint32_t t = (uint32_t)(now - start);
             if (t >= onMs) inten = 0;
@@ -750,6 +771,7 @@ public:
         difficulty = (Difficulty)globalSettings.getSimonDifficulty();
         maxLives = globalSettings.getSimonLives();
         lives = maxLives;
+        simonSpeed = globalSettings.getSimonSpeed();
         startNewRun((uint32_t)millis());
     }
 

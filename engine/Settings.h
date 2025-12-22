@@ -46,6 +46,14 @@ public:
     static const uint8_t SIMON_LIVES_MAX = 5;
 
     // -----------------------------------------------------
+    // Simon speed (persisted via reserved[4])
+    // -----------------------------------------------------
+    // 1..9 (higher = faster sequence display)
+    static const uint8_t DEFAULT_SIMON_SPEED = 5;
+    static const uint8_t SIMON_SPEED_MIN = 1;
+    static const uint8_t SIMON_SPEED_MAX = 9;
+
+    // -----------------------------------------------------
     // Player Color (persisted)
     // -----------------------------------------------------
     // NOTE: We intentionally store this in reserved[0] so older EEPROM layouts
@@ -168,6 +176,7 @@ public:
         data.reserved[1] = DEFAULT_SOUND_VOLUME_LEVEL;
         data.reserved[2] = DEFAULT_SIMON_DIFFICULTY;
         data.reserved[3] = DEFAULT_SIMON_LIVES;
+        data.reserved[4] = DEFAULT_SIMON_SPEED;
     }
     
     /**
@@ -268,6 +277,17 @@ public:
 
     void setSimonLives(uint8_t lives) {
         data.reserved[3] = (uint8_t)constrain((int)lives, (int)SIMON_LIVES_MIN, (int)SIMON_LIVES_MAX);
+    }
+
+    // -----------------------------------------------------
+    // Simon speed (persisted via reserved[4])
+    // -----------------------------------------------------
+    uint8_t getSimonSpeed() const {
+        return (uint8_t)constrain((int)data.reserved[4], (int)SIMON_SPEED_MIN, (int)SIMON_SPEED_MAX);
+    }
+
+    void setSimonSpeed(uint8_t speed) {
+        data.reserved[4] = (uint8_t)constrain((int)speed, (int)SIMON_SPEED_MIN, (int)SIMON_SPEED_MAX);
     }
 
     // -----------------------------------------------------
