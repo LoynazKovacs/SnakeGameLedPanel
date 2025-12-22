@@ -232,14 +232,15 @@ private:
         auto drawRight = [&](const char* s) {
             if (!s) return;
             // Right-align to screen edge to avoid GFX auto-wrapping when text overflows.
-            // TomThumb is tiny; safe approx is ~4px per character.
-            int len = (int)strlen(s);
-            if (len < 0) len = 0;
-            if (len > 15) len = 15;
-            const int textW = len * 4;
-            int x = PANEL_RES_X - 2 - textW;
+            // IMPORTANT: TomThumb is proportional; use exact bounds instead of fixed "4px per char".
+            display->setFont(&TomThumb);
+            int16_t x1 = 0, y1 = 0;
+            uint16_t w = 0, h = 0;
+            display->getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+            int x = PANEL_RES_X - 2 - (int)w;
             // Keep a minimum so it doesn't collide too much with labels.
             if (x < 44) x = 44;
+            if (x > 50) x = 50;
             SmallFont::drawString(display, x, yPos, s, COLOR_YELLOW);
         };
 

@@ -34,7 +34,7 @@ static constexpr int FACE_GAP = 4;     // gap between center and neighbor center
 
 // Diamond layout around this center.
 static constexpr int FACE_CX = 40;
-static constexpr int FACE_CY = 34;
+static constexpr int FACE_CY = 36; // moved down by 2px
 
 // LB/RB bars at top corners
 static constexpr int SHOULDER_W = 24;
