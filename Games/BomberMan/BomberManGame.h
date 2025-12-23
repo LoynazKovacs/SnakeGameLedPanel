@@ -53,7 +53,9 @@ private:
 
     struct Bomb {
         bool active = false;
-        uint8_t owner = 0;
+        bool ownerIsEnemy = false;
+        uint8_t owner = 0; // player pad when ownerIsEnemy=false
+        uint8_t ownerEnemyIndex = 0; // enemy index when ownerIsEnemy=true
         uint8_t gx = 0, gy = 0;
         uint32_t plantedMs = 0;
         uint8_t range = 2;
@@ -110,6 +112,7 @@ private:
         uint8_t dir = 0; // 0 up,1 down,2 left,3 right
         uint32_t nextTurnMs = 0;
         uint32_t moveIntervalMs = 320;
+        uint32_t nextBombMs = 0;
     };
 
     // Level state
@@ -217,7 +220,9 @@ private:
             }
         }
 
-        // Reserve spawn zones around corners (keep empty)
+        // Reserve spawn zones around corners (keep empty).
+        // Additionally, guarantee the 2 inward tiles (right+down or left+down) are empty
+        // even if they would be solid from the checkerboard.
         auto reserve = [&](int sx, int sy) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dx = -1; dx <= 1; dx++) {
@@ -231,6 +236,33 @@ private:
         reserve(Cfg::GRID_W - 2, 1);
         reserve(1, Cfg::GRID_H - 2);
         reserve(Cfg::GRID_W - 2, Cfg::GRID_H - 2);
+
+        auto clearInward2 = [&](int sx, int sy, int ix, int iy) {
+            // sx,sy is spawn; ix,iy is inward direction (-1/1, -1/1)
+            // Clear spawn, one step inward in X, one step inward in Y (and the diagonal if in-bounds).
+            const int x0 = sx;
+            const int y0 = sy;
+            const int x1 = sx + ix;
+            const int y1 = sy;
+            const int x2 = sx;
+            const int y2 = sy + iy;
+            const int x3 = sx + ix;
+            const int y3 = sy + iy;
+            auto clearTile = [&](int x, int y) {
+                if (!inBounds(x, y)) return;
+                // Never clear outer border solids.
+                if (x == 0 || y == 0 || x == Cfg::GRID_W - 1 || y == Cfg::GRID_H - 1) return;
+                tiles[y][x] = TILE_EMPTY;
+            };
+            clearTile(x0, y0);
+            clearTile(x1, y1);
+            clearTile(x2, y2);
+            clearTile(x3, y3);
+        };
+        clearInward2(1, 1, 1, 1);                               // right + down
+        clearInward2(Cfg::GRID_W - 2, 1, -1, 1);                // left + down
+        clearInward2(1, Cfg::GRID_H - 2, 1, -1);                // right + up
+        clearInward2(Cfg::GRID_W - 2, Cfg::GRID_H - 2, -1, -1); // left + up
 
         // Place bricks randomly on empty tiles
         for (int y = 1; y < Cfg::GRID_H - 1; y++) {
@@ -348,7 +380,9 @@ private:
         for (int i = 0; i < Cfg::MAX_BOMBS; i++) {
             if (bombs[i].active) continue;
             bombs[i].active = true;
+            bombs[i].ownerIsEnemy = false;
             bombs[i].owner = p.pad;
+            bombs[i].ownerEnemyIndex = 0;
             bombs[i].gx = p.gx;
             bombs[i].gy = p.gy;
             bombs[i].plantedMs = now;
@@ -358,7 +392,7 @@ private:
         }
     }
 
-    void explodeAt(uint8_t gx, uint8_t gy, uint32_t now) {
+    void explodeAt(uint8_t gx, uint8_t gy, uint32_t now, const Bomb* srcBomb) {
         if (!inBounds(gx, gy)) return;
         explT[gy][gx] = 255;
         // Damage players/enemies immediately.
@@ -370,6 +404,10 @@ private:
         for (int i = 0; i < Cfg::MAX_ENEMIES; i++) {
             if (!enemies[i].alive) continue;
             if (enemies[i].gx == gx && enemies[i].gy == gy) {
+                // Enemies must not blow themselves up with their own bombs.
+                if (srcBomb && srcBomb->ownerIsEnemy && srcBomb->ownerEnemyIndex == (uint8_t)i) {
+                    continue;
+                }
                 enemies[i].alive = false;
                 score += Cfg::SCORE_KILL_ENEMY;
             }
@@ -407,13 +445,13 @@ private:
         b.active = false;
 
         // decrement owner's active bomb count
-        if (b.owner < Cfg::MAX_PLAYERS) {
+        if (!b.ownerIsEnemy && b.owner < Cfg::MAX_PLAYERS) {
             Player& p = players[b.owner];
             if (p.bombsActive > 0) p.bombsActive--;
         }
 
         // Center
-        explodeAt(b.gx, b.gy, now);
+        explodeAt(b.gx, b.gy, now, &b);
 
         // Propagate 4 dirs
         const int dx[4] = { 0, 0, -1, 1 };
@@ -426,7 +464,7 @@ private:
                 y += dy[dir];
                 if (!inBounds(x, y)) break;
                 if (tiles[y][x] == TILE_SOLID) break;
-                explodeAt((uint8_t)x, (uint8_t)y, now);
+                explodeAt((uint8_t)x, (uint8_t)y, now, &b);
                 // Chain bombs
                 for (int j = 0; j < Cfg::MAX_BOMBS; j++) {
                     if (bombs[j].active && bombs[j].gx == (uint8_t)x && bombs[j].gy == (uint8_t)y) {
@@ -438,6 +476,56 @@ private:
                     break;
                 }
             }
+        }
+    }
+
+    bool enemyHasBombAt(uint8_t enemyIndex) const {
+        for (int i = 0; i < Cfg::MAX_BOMBS; i++) {
+            if (!bombs[i].active) continue;
+            if (bombs[i].ownerIsEnemy && bombs[i].ownerEnemyIndex == enemyIndex) return true;
+        }
+        return false;
+    }
+
+    void enemyPlantBomb(uint8_t enemyIndex, uint32_t now) {
+        if (enemyIndex >= Cfg::MAX_ENEMIES) return;
+        Enemy& e = enemies[enemyIndex];
+        if (!e.alive) return;
+        if (now < e.nextBombMs) return;
+        if (enemyHasBombAt(enemyIndex)) return; // 1 active bomb per enemy
+
+        // Only plant if at least one escape tile exists.
+        const int dx[4] = { 0, 0, -1, 1 };
+        const int dy[4] = { -1, 1, 0, 0 };
+        bool hasEscape = false;
+        for (int dir = 0; dir < 4; dir++) {
+            const int nx = (int)e.gx + dx[dir];
+            const int ny = (int)e.gy + dy[dir];
+            if (!isBlocked(nx, ny)) { hasEscape = true; break; }
+        }
+        if (!hasEscape) {
+            e.nextBombMs = now + 600;
+            return;
+        }
+
+        // Plant bomb at enemy tile (if no other bomb already here).
+        for (int i = 0; i < Cfg::MAX_BOMBS; i++) {
+            if (bombs[i].active && bombs[i].gx == e.gx && bombs[i].gy == e.gy) return;
+        }
+        for (int i = 0; i < Cfg::MAX_BOMBS; i++) {
+            if (bombs[i].active) continue;
+            bombs[i].active = true;
+            bombs[i].ownerIsEnemy = true;
+            bombs[i].owner = 0;
+            bombs[i].ownerEnemyIndex = enemyIndex;
+            bombs[i].gx = e.gx;
+            bombs[i].gy = e.gy;
+            bombs[i].plantedMs = now;
+            // Enemies use moderate range, scales a bit with level.
+            bombs[i].range = (uint8_t)min(4, 2 + (int)level / 3);
+            // Cooldown
+            e.nextBombMs = now + (uint32_t)random(1500, 2600);
+            return;
         }
     }
 
@@ -615,6 +703,25 @@ private:
                 if (!p.alive) continue;
                 if (p.gx == e.gx && p.gy == e.gy) hitPlayer(p, now);
             }
+
+            // Enemy bomb placement:
+            // - Random enemies sometimes plant bombs.
+            // - Chasers plant more aggressively when close.
+            if (now >= e.nextBombMs) {
+                bool plant = false;
+                if (e.type == 1) {
+                    // Plant if near any player (Manhattan <= 3)
+                    for (int pi = 0; pi < Cfg::MAX_PLAYERS; pi++) {
+                        const Player& p = players[pi];
+                        if (!p.alive) continue;
+                        const int d = abs((int)p.gx - (int)e.gx) + abs((int)p.gy - (int)e.gy);
+                        if (d <= 3) { plant = true; break; }
+                    }
+                } else {
+                    plant = (random(0, 100) < 8);
+                }
+                if (plant) enemyPlantBomb((uint8_t)i, now);
+            }
         }
     }
 
@@ -655,6 +762,12 @@ private:
             const int offY = p.py % Cfg::CELL;
             const bool alignedX = (offX == 0);
             const bool alignedY = (offY == 0);
+
+            // Input-only move: if no direction is held, stop immediately.
+            if (p.wishX == 0 && p.wishY == 0) {
+                p.dirX = 0;
+                p.dirY = 0;
+            }
 
             // Soft "auto-centering" towards grid lines for smoother cornering.
             // When moving horizontally, try to nudge Y to nearest aligned if possible (and vice versa).

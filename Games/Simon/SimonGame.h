@@ -362,44 +362,40 @@ private:
         return { 0, 0, 0, 0 };
     }
 
-    void drawDpadPlus(MatrixPanel_I2S_DMA* d, uint32_t now, uint8_t intensity, Symbol errSym, uint8_t errI) const {
+    void drawDpadPlus(MatrixPanel_I2S_DMA* d, uint8_t intensity) const {
         if (!d || difficulty < DIFF_HARD) return;
-        // Place under the status counter area, away from face buttons.
-        // Counter is drawn at (8,22). We put the plus below it.
-        const int cx = 18;
-        const int cy = 42;
-        const int arm = 10;
-        const int thick = 3;
+        // 16x16 area, 4px thickness, with a center diamond.
+        // Place it left + lower so it doesn't overlap XYAB.
+        const int x0 = 4;
+        const int y0 = 38;
+        const int cx = x0 + 8;
+        const int cy = y0 + 8;
+        const int thick = 4;
+        const int armLen = 8;
 
-        auto fillRect = [&](int x, int y, int w, int h, uint16_t c) {
-            d->fillRect(x, y, w, h, c);
-        };
-
-        // Base plus (dim)
-        const uint16_t base = dim565(SimonGameConfig::COL_DPAD, 70);
-        fillRect(cx - thick / 2, cy - arm, thick, arm * 2 + 1, base);
-        fillRect(cx - arm, cy - thick / 2, arm * 2 + 1, thick, base);
-
-        // Determine which direction to highlight.
+        // Determine which direction to highlight (only one arm should flash).
         Symbol s = SYM_NONE;
         if (activeSym == SYM_UP || activeSym == SYM_DOWN || activeSym == SYM_LEFT || activeSym == SYM_RIGHT) s = activeSym;
-        if (errSym == SYM_UP || errSym == SYM_DOWN || errSym == SYM_LEFT || errSym == SYM_RIGHT) s = errSym;
         if (s == SYM_NONE) return;
 
-        const bool isErr = (s == errSym);
-        const uint16_t col = isErr ? COLOR_RED : SimonGameConfig::COL_DPAD;
-        const uint8_t amt = isErr ? errI : intensity;
-        const uint16_t hi = dim565(col, amt);
+        const uint16_t col = dim565(SimonGameConfig::COL_DPAD, intensity);
 
-        // Highlight only the relevant arm segment so it doesn't look like a full cross.
-        if (s == SYM_UP)    fillRect(cx - thick / 2, cy - arm, thick, arm, hi);
-        if (s == SYM_DOWN)  fillRect(cx - thick / 2, cy + 1, thick, arm, hi);
-        if (s == SYM_LEFT)  fillRect(cx - arm, cy - thick / 2, arm, thick, hi);
-        if (s == SYM_RIGHT) fillRect(cx + 1, cy - thick / 2, arm, thick, hi);
+        auto fillRect = [&](int x, int y, int w, int h) { d->fillRect(x, y, w, h, col); };
 
-        // Small outline to keep it readable.
-        d->drawRect(cx - arm, cy - arm, arm * 2 + 1, arm * 2 + 1, dim565(COLOR_CYAN, 120));
-        (void)now;
+        // Draw ONLY the active arm (no border, no base cross).
+        if (s == SYM_UP)    fillRect(cx - thick / 2, cy - armLen, thick, armLen);
+        if (s == SYM_DOWN)  fillRect(cx - thick / 2, cy, thick, armLen);
+        if (s == SYM_LEFT)  fillRect(cx - armLen, cy - thick / 2, armLen, thick);
+        if (s == SYM_RIGHT) fillRect(cx, cy - thick / 2, armLen, thick);
+
+        // Center diamond (rotated square) always visible (dim)
+        const uint16_t dc = dim565(SimonGameConfig::COL_DPAD, 120);
+        for (int dy = -3; dy <= 3; dy++) {
+            const int w = 3 - abs(dy);
+            for (int dx = -w; dx <= w; dx++) {
+                d->drawPixel(cx + dx, cy + dy, dc);
+            }
+        }
     }
 
     static uint16_t labelColorFor(uint16_t baseColor) {
@@ -751,44 +747,43 @@ public:
             drawPill(display, shoulderRect(SYM_RB), SimonGameConfig::COL_RB, "RB", rbAct, (err == SYM_RB) ? errI : inten, err == SYM_RB);
         }
 
-        // Hard: D-pad edge bands (4 columns / 4 rows flash)
-        // Hard: show D-pad as a large '+' indicator under the counter.
-        // (Keeps UI clean and avoids overlapping labels/buttons.)
-        drawDpadPlus(display, now, inten, err, errI);
+        // Hard: D-pad as a 16x16 '+' (only the active arm flashes) with a center diamond.
+        // During error: do NOT show the '+'.
+        if (difficulty >= DIFF_HARD && phase != PHASE_ERROR) {
+            drawDpadPlus(display, inten);
+        }
 
         // Pulse overlay (success)
         drawPulse(display, now);
 
-        // Error flash overlay (short, red-ish global tint)
+        // Error background flash: gradient overlay (no big '+')
         if (phase == PHASE_ERROR) {
-            const uint32_t age = (uint32_t)(now - phaseStartMs);
-            // 3 quick pulses
-            const uint32_t period = speedScaleMs(90);
-            const bool on = ((age / max(1u, period)) % 2u) == 0u;
-            if (on) {
-                // Light red frame overlay (cheap): corners + center cross
-                const uint16_t c = dim565(COLOR_RED, 140);
-                display->drawRect(1, 9, PANEL_RES_X - 2, PANEL_RES_Y - 10, c);
-                display->drawLine(0, PANEL_RES_Y / 2, PANEL_RES_X - 1, PANEL_RES_Y / 2, dim565(COLOR_RED, 90));
-                display->drawLine(PANEL_RES_X / 2, 8, PANEL_RES_X / 2, PANEL_RES_Y - 1, dim565(COLOR_RED, 90));
+            const uint8_t a = errI; // 0..255
+            // Vertical gradient under HUD (y>=8)
+            for (int y = 8; y < PANEL_RES_Y; y++) {
+                const uint8_t g = (uint8_t)map(y, 8, PANEL_RES_Y - 1, 40, 0);
+                const uint16_t c = dim565(display->color565(255, g, g), a);
+                display->drawFastHLine(0, y, PANEL_RES_X, c);
             }
         }
 
-        // Status text (center-left area)
+        // Status text (moved 4px left + 1 row down)
         char st[24];
+        const int sx = 4;
+        const int sy = 30;
         if (phase == PHASE_READY) {
-            SmallFont::drawString(display, 8, 22, "READY", COLOR_WHITE);
+            SmallFont::drawString(display, sx, sy, "READY", COLOR_WHITE);
         } else if (phase == PHASE_SHOW) {
             snprintf(st, sizeof(st), "SHOW %u", (unsigned)seqLen);
-            SmallFont::drawString(display, 8, 22, st, COLOR_WHITE);
+            SmallFont::drawString(display, sx, sy, st, COLOR_WHITE);
         } else if (phase == PHASE_INPUT) {
             snprintf(st, sizeof(st), "IN %u/%u", (unsigned)inputIndex, (unsigned)seqLen);
-            SmallFont::drawString(display, 8, 22, st, COLOR_WHITE);
+            SmallFont::drawString(display, sx, sy, st, COLOR_WHITE);
         } else if (phase == PHASE_BETWEEN) {
-            SmallFont::drawString(display, 8, 22, "GOOD!", COLOR_GREEN);
+            SmallFont::drawString(display, sx, sy, "GOOD!", COLOR_GREEN);
         } else if (phase == PHASE_ERROR) {
             // Error hint
-            SmallFont::drawString(display, 8, 22, "MISS!", COLOR_RED);
+            SmallFont::drawString(display, sx, sy, "MISS!", COLOR_RED);
         }
     }
 
