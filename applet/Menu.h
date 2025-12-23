@@ -60,15 +60,19 @@ public:
         };
         const uint16_t offC = d->color565(90, 90, 90);
 
-        // "P1" is small, but we still keep a 1px gap between tokens for readability.
-        static constexpr int TOKEN_W = 7;   // approx width of "P1" in TomThumb
+        // P1..P4 tokens: compute exact bounds to avoid wrapping (the last character can spill).
+        d->setFont(&TomThumb);
+        int16_t x1 = 0, y1 = 0;
+        uint16_t w = 0, h = 0;
+        d->getTextBounds("P4", 0, 0, &x1, &y1, &w, &h);
+        const int tokenW = (int)w;
         static constexpr int TOKEN_GAP = 1; // requested 1px separation
-        static constexpr int TOKEN_STRIDE = TOKEN_W + TOKEN_GAP;
-        int px = PANEL_RES_X - (MAX_GAMEPADS * TOKEN_STRIDE);
+        const int totalW = MAX_GAMEPADS * tokenW + (MAX_GAMEPADS - 1) * TOKEN_GAP;
+        int px = PANEL_RES_X - 1 - totalW; // keep 1px right margin
         for (int i = 0; i < MAX_GAMEPADS; i++) {
             const bool connected = (input && input->getController(i) != nullptr);
             SmallFont::drawStringF(d, px, 6, connected ? pColors[i] : offC, "P%d", i + 1);
-            px += TOKEN_STRIDE;
+            px += tokenW + TOKEN_GAP;
         }
 
         // Draw list below HUD using the reusable widget.
