@@ -10,8 +10,8 @@
 class Menu : public ListModel {
 public:
     // Main menu options (actual indices). Keep Settings LAST (engine treats it specially).
-    const char* options[12] = { "Snake", "Tron", "Pong", "Breakout", "Shooter", "Labyrinth", "Tetris", "Asteroids", "Music", "MVisual", "Leaderboard", "Settings" };
-    static const int NUM_OPTIONS = 12;
+    const char* options[18] = { "Snake", "Tron", "Pong", "Breakout", "Shooter", "Labyrinth", "Tetris", "Asteroids", "Music", "MVisual", "Bomber", "Simon", "Dino", "Mines", "Matrix", "Lava", "Leaderboard", "Settings" };
+    static const int NUM_OPTIONS = 18;
 
     // Reusable list widget state (selection + scrolling + input).
     ScrollableList list;
@@ -60,15 +60,21 @@ public:
         };
         const uint16_t offC = d->color565(90, 90, 90);
 
-        // "P1" is small, but we still keep a 1px gap between tokens for readability.
-        static constexpr int TOKEN_W = 7;   // approx width of "P1" in TomThumb
-        static constexpr int TOKEN_GAP = 1; // requested 1px separation
-        static constexpr int TOKEN_STRIDE = TOKEN_W + TOKEN_GAP;
-        int px = PANEL_RES_X - (MAX_GAMEPADS * TOKEN_STRIDE);
+        // P1..P4 tokens: flush-right, no extra gaps.
+        // We intentionally draw tokens with a tiny overlap to avoid perceived "spaces" between them.
+        d->setFont(&TomThumb);
+        int16_t x1 = 0, y1 = 0;
+        uint16_t w = 0, h = 0;
+        d->getTextBounds("P4", 0, 0, &x1, &y1, &w, &h);
+        const int tokenW = (int)w;
+        static constexpr int TOKEN_OVERLAP = 1; // overlap by 1px between tokens
+        const int totalW = MAX_GAMEPADS * tokenW - (MAX_GAMEPADS - 1) * TOKEN_OVERLAP;
+        // Fully flush-right: right edge at PANEL_RES_X.
+        int px = PANEL_RES_X - totalW;
         for (int i = 0; i < MAX_GAMEPADS; i++) {
             const bool connected = (input && input->getController(i) != nullptr);
             SmallFont::drawStringF(d, px, 6, connected ? pColors[i] : offC, "P%d", i + 1);
-            px += TOKEN_STRIDE;
+            px += tokenW - TOKEN_OVERLAP;
         }
 
         // Draw list below HUD using the reusable widget.

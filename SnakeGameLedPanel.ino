@@ -23,6 +23,12 @@
 #include "Games/Asteroids/AsteroidsGame.h"
 #include "Games/Music/MusicApp.h"
 #include "Games/MVisual/MVisualApp.h"
+#include "Games/BomberMan/BomberManGame.h"
+#include "Games/Simon/SimonGame.h"
+#include "Games/DinoRun/DinoRunGame.h"
+#include "Games/Minesweeper/MinesweeperGame.h"
+#include "Games/MatrixRain/MatrixRainApp.h"
+#include "Games/LavaLamp/LavaLampApp.h"
 #include "applet/Menu.h"
 #include "engine/EepromManager.h"
 #include "engine/Settings.h"
@@ -439,6 +445,24 @@ void loop() {
                 break;
               case 9:  // MVisual
                 currentGame = new MVisualApp();
+                break;
+              case 10: // Bomber
+                currentGame = new BomberManGame();
+                break;
+              case 11: // Simon
+                currentGame = new SimonGame();
+                break;
+              case 12: // Dino
+                currentGame = new DinoRunGame();
+                break;
+              case 13: // Mines
+                currentGame = new MinesweeperGame();
+                break;
+              case 14: // Matrix
+                currentGame = new MatrixRainApp();
+                break;
+              case 15: // Lava
+                currentGame = new LavaLampApp();
                 break;
               default:
                 currentGame = nullptr;
