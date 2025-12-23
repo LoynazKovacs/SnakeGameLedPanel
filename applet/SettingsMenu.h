@@ -262,7 +262,7 @@ private:
             drawRight(val);
         } else if (actualIndex == SETTING_SIMON_DIFFICULTY) {
             const uint8_t d = globalSettings.getSimonDifficulty();
-            const char* val = (d == 0) ? "EASY" : (d == 1) ? "MED" : "HARD";
+            const char* val = (d == 0) ? "EAS" : (d == 1) ? "MED" : "HAR";
             drawRight(val);
         } else if (actualIndex == SETTING_SIMON_LIVES) {
             char val[4];

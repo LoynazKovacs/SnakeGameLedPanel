@@ -364,37 +364,40 @@ private:
 
     void drawDpadPlus(MatrixPanel_I2S_DMA* d, uint8_t intensity) const {
         if (!d || difficulty < DIFF_HARD) return;
-        // 16x16 area, 4px thickness, with a center diamond.
-        // Place it left + lower so it doesn't overlap XYAB.
-        const int x0 = 4;
-        const int y0 = 38;
-        const int cx = x0 + 8;
-        const int cy = y0 + 8;
-        const int thick = 4;
-        const int armLen = 8;
+        // 15x15 area, 5px thick arms, hollow center square.
+        // Place left and lower so it won't overlap XYAB.
+        const int x0 = 2;
+        const int y0 = 40;
+        const int size = 15;
+        const int cx = x0 + size / 2; // 7
+        const int cy = y0 + size / 2; // 7
+        const int thick = 5;
+        const int halfT = thick / 2;  // 2
 
-        // Determine which direction to highlight (only one arm should flash).
+        // Base cross is always visible (dim).
+        const uint16_t base = dim565(SimonGameConfig::COL_DPAD, 80);
+        d->fillRect(cx - halfT, y0, thick, size, base);     // vertical
+        d->fillRect(x0, cy - halfT, size, thick, base);     // horizontal
+
+        // Hollow center square (clear the middle 5x5).
+        d->fillRect(cx - halfT, cy - halfT, thick, thick, COLOR_BLACK);
+
+        // Determine which direction to highlight (one arm).
         Symbol s = SYM_NONE;
         if (activeSym == SYM_UP || activeSym == SYM_DOWN || activeSym == SYM_LEFT || activeSym == SYM_RIGHT) s = activeSym;
-        if (s == SYM_NONE) return;
+        // Stronger highlight (boost intensity).
+        const uint8_t hiAmt = (uint8_t)constrain((int)intensity + 80, 0, 255);
+        const uint16_t hi = dim565(SimonGameConfig::COL_DPAD, hiAmt);
 
-        const uint16_t col = dim565(SimonGameConfig::COL_DPAD, intensity);
-
-        auto fillRect = [&](int x, int y, int w, int h) { d->fillRect(x, y, w, h, col); };
-
-        // Draw ONLY the active arm (no border, no base cross).
-        if (s == SYM_UP)    fillRect(cx - thick / 2, cy - armLen, thick, armLen);
-        if (s == SYM_DOWN)  fillRect(cx - thick / 2, cy, thick, armLen);
-        if (s == SYM_LEFT)  fillRect(cx - armLen, cy - thick / 2, armLen, thick);
-        if (s == SYM_RIGHT) fillRect(cx, cy - thick / 2, armLen, thick);
-
-        // Center diamond (rotated square) always visible (dim)
-        const uint16_t dc = dim565(SimonGameConfig::COL_DPAD, 120);
-        for (int dy = -3; dy <= 3; dy++) {
-            const int w = 3 - abs(dy);
-            for (int dx = -w; dx <= w; dx++) {
-                d->drawPixel(cx + dx, cy + dy, dc);
-            }
+        // Highlight arm segment only (keep center hollow).
+        if (s == SYM_UP) {
+            d->fillRect(cx - halfT, y0, thick, (size / 2) - halfT, hi);
+        } else if (s == SYM_DOWN) {
+            d->fillRect(cx - halfT, cy + halfT + 1, thick, (size / 2) - halfT, hi);
+        } else if (s == SYM_LEFT) {
+            d->fillRect(x0, cy - halfT, (size / 2) - halfT, thick, hi);
+        } else if (s == SYM_RIGHT) {
+            d->fillRect(cx + halfT + 1, cy - halfT, (size / 2) - halfT, thick, hi);
         }
     }
 
@@ -747,10 +750,11 @@ public:
             drawPill(display, shoulderRect(SYM_RB), SimonGameConfig::COL_RB, "RB", rbAct, (err == SYM_RB) ? errI : inten, err == SYM_RB);
         }
 
-        // Hard: D-pad as a 16x16 '+' (only the active arm flashes) with a center diamond.
-        // During error: do NOT show the '+'.
-        if (difficulty >= DIFF_HARD && phase != PHASE_ERROR) {
-            drawDpadPlus(display, inten);
+        // Hard: D-pad as a 15x15 '+' (always visible; one arm highlights).
+        if (difficulty >= DIFF_HARD) {
+            // During error, keep it visible but do not highlight strongly.
+            const uint8_t di = (phase == PHASE_ERROR) ? 0 : inten;
+            drawDpadPlus(display, di);
         }
 
         // Pulse overlay (success)
@@ -769,8 +773,8 @@ public:
 
         // Status text (moved 4px left + 1 row down)
         char st[24];
-        const int sx = 4;
-        const int sy = 30;
+        const int sx = 0;
+        const int sy = 28;
         if (phase == PHASE_READY) {
             SmallFont::drawString(display, sx, sy, "READY", COLOR_WHITE);
         } else if (phase == PHASE_SHOW) {

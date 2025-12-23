@@ -66,9 +66,10 @@ public:
         uint16_t w = 0, h = 0;
         d->getTextBounds("P4", 0, 0, &x1, &y1, &w, &h);
         const int tokenW = (int)w;
-        static constexpr int TOKEN_GAP = 1; // requested 1px separation
+        static constexpr int TOKEN_GAP = 0; // no gaps; keep on one line
         const int totalW = MAX_GAMEPADS * tokenW + (MAX_GAMEPADS - 1) * TOKEN_GAP;
-        int px = PANEL_RES_X - 1 - totalW; // keep 1px right margin
+        // Flush-right: last pixel of the last token should land on PANEL_RES_X-1.
+        int px = PANEL_RES_X - totalW;
         for (int i = 0; i < MAX_GAMEPADS; i++) {
             const bool connected = (input && input->getController(i) != nullptr);
             SmallFont::drawStringF(d, px, 6, connected ? pColors[i] : offC, "P%d", i + 1);

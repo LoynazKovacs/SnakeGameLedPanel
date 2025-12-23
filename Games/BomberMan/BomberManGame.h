@@ -97,6 +97,7 @@ private:
 
         // input edges
         bool lastA = false;
+        uint32_t spawnMs = 0;
 
         // movement
         int8_t dirX = 0;
@@ -188,6 +189,8 @@ private:
         p.dirX = 0; p.dirY = 0;
         p.wishX = 0; p.wishY = 0;
         p.alive = true;
+        p.spawnMs = (uint32_t)millis();
+        p.lastA = true; // avoid instant bomb if A is held at spawn time
     }
 
     bool anyExplosionAt(int gx, int gy) const {
@@ -284,6 +287,12 @@ private:
                 if (random(0, 100) < 55) tiles[y][x] = TILE_BRICK;
             }
         }
+
+        // IMPORTANT: ensure spawn corridors stay empty even after brick placement.
+        clearInward2(1, 1, 1, 1);
+        clearInward2(Cfg::GRID_W - 2, 1, -1, 1);
+        clearInward2(1, Cfg::GRID_H - 2, 1, -1);
+        clearInward2(Cfg::GRID_W - 2, Cfg::GRID_H - 2, -1, -1);
 
         // Place gate under one brick (guaranteed)
         // Find a random brick not in spawn zones.
@@ -756,96 +765,27 @@ private:
             // Explosion damage
             if (anyExplosionAt(p.gx, p.gy)) hitPlayer(p, now);
 
-            // Movement (pixel-based inside 4x4 cells)
+            // Movement (discrete grid-step, input-driven)
             const uint8_t d = ctl->dpad();
-            p.wishX = 0; p.wishY = 0;
-            if (dUp(d)) p.wishY = -1;
-            else if (dDown(d)) p.wishY = 1;
-            else if (dLeft(d)) p.wishX = -1;
-            else if (dRight(d)) p.wishX = 1;
+            int dx = 0, dy = 0;
+            if (dUp(d)) dy = -1;
+            else if (dDown(d)) dy = 1;
+            else if (dLeft(d)) dx = -1;
+            else if (dRight(d)) dx = 1;
 
-            // speed 1..7 -> pxStep 1..3
-            const int pxStep = 1 + ((int)p.speed - 1) / 3;
-
-            // Current grid based on px
-            p.gx = (uint8_t)constrain((int)(p.px / Cfg::CELL), 0, Cfg::GRID_W - 1);
-            p.gy = (uint8_t)constrain((int)(p.py / Cfg::CELL), 0, Cfg::GRID_H - 1);
-            const int offX = p.px % Cfg::CELL;
-            const int offY = p.py % Cfg::CELL;
-            const bool alignedX = (offX == 0);
-            const bool alignedY = (offY == 0);
-
-            // Input-only move: if no direction is held, stop immediately.
-            if (p.wishX == 0 && p.wishY == 0) {
-                p.dirX = 0;
-                p.dirY = 0;
-            }
-
-            // Soft "auto-centering" towards grid lines for smoother cornering.
-            // When moving horizontally, try to nudge Y to nearest aligned if possible (and vice versa).
-            auto tryNudgeToAlign = [&](bool movingHoriz) {
-                if (movingHoriz) {
-                    if (alignedY) return;
-                    const int downDist = (Cfg::CELL - offY) % Cfg::CELL;
-                    const int upDist = offY;
-                    const int dir = (upDist <= downDist) ? -1 : 1; // nudge to nearest
-                    const int ny = p.py + dir;
-                    const int ngy = (ny + (dir > 0 ? (Cfg::CELL - 1) : 0)) / Cfg::CELL;
-                    // Only nudge if still in same column and target tile isn't blocked.
-                    if (!isTileBlockedForPlayer((int)p.gx, ngy)) {
-                        p.py = (int16_t)constrain(ny, 0, (Cfg::GRID_H - 1) * Cfg::CELL);
+            if (dx != 0 || dy != 0) {
+                const int nx = (int)p.gx + dx;
+                const int ny = (int)p.gy + dy;
+                static uint32_t lastMoveMs[Cfg::MAX_PLAYERS] = {0,0,0,0};
+                const uint32_t interval = (uint32_t)max(60, 230 - (int)p.speed * 22);
+                if ((uint32_t)(now - lastMoveMs[i]) >= interval) {
+                    if (!isBlocked(nx, ny)) {
+                        p.gx = (uint8_t)nx;
+                        p.gy = (uint8_t)ny;
+                        p.px = (int16_t)toPx(p.gx);
+                        p.py = (int16_t)toPx(p.gy);
+                        lastMoveMs[i] = now;
                     }
-                } else {
-                    if (alignedX) return;
-                    const int rightDist = (Cfg::CELL - offX) % Cfg::CELL;
-                    const int leftDist = offX;
-                    const int dir = (leftDist <= rightDist) ? -1 : 1;
-                    const int nx = p.px + dir;
-                    const int ngx = (nx + (dir > 0 ? (Cfg::CELL - 1) : 0)) / Cfg::CELL;
-                    if (!isTileBlockedForPlayer(ngx, (int)p.gy)) {
-                        p.px = (int16_t)constrain(nx, 0, (Cfg::GRID_W - 1) * Cfg::CELL);
-                    }
-                }
-            };
-
-            // Allow turning when aligned to grid.
-            if ((p.wishX != 0 || p.wishY != 0) && ((p.wishX != 0 && alignedY) || (p.wishY != 0 && alignedX))) {
-                const int ngx = (int)p.gx + (int)p.wishX;
-                const int ngy = (int)p.gy + (int)p.wishY;
-                if (!isBlocked(ngx, ngy)) {
-                    p.dirX = p.wishX;
-                    p.dirY = p.wishY;
-                }
-            }
-
-            // Move in current direction (if not blocked when crossing cell boundary)
-            if (p.dirX != 0 || p.dirY != 0) {
-                // Nudge perpendicular axis towards alignment for smoother cornering.
-                tryNudgeToAlign(p.dirX != 0);
-
-                int nxPx = p.px + p.dirX * pxStep;
-                int nyPx = p.py + p.dirY * pxStep;
-
-                // Determine the next cell we are trying to enter ONLY when crossing a boundary.
-                int nextGx = (int)p.gx;
-                int nextGy = (int)p.gy;
-                bool crossing = false;
-                if (p.dirX > 0 && (offX + pxStep) >= Cfg::CELL) { nextGx = (int)p.gx + 1; crossing = true; }
-                if (p.dirX < 0 && (offX - pxStep) < 0)           { nextGx = (int)p.gx - 1; crossing = true; }
-                if (p.dirY > 0 && (offY + pxStep) >= Cfg::CELL) { nextGy = (int)p.gy + 1; crossing = true; }
-                if (p.dirY < 0 && (offY - pxStep) < 0)           { nextGy = (int)p.gy - 1; crossing = true; }
-
-                if (!crossing || !isBlocked(nextGx, nextGy)) {
-                    // Apply movement; clamp within playfield.
-                    p.px = (int16_t)constrain(nxPx, 0, (Cfg::GRID_W - 1) * Cfg::CELL);
-                    p.py = (int16_t)constrain(nyPx, 0, (Cfg::GRID_H - 1) * Cfg::CELL);
-                    p.gx = (uint8_t)constrain((int)(p.px / Cfg::CELL), 0, Cfg::GRID_W - 1);
-                    p.gy = (uint8_t)constrain((int)(p.py / Cfg::CELL), 0, Cfg::GRID_H - 1);
-                } else {
-                    // Stop at cell boundary.
-                    if (p.dirX != 0) p.px = (int16_t)toPx(p.gx);
-                    if (p.dirY != 0) p.py = (int16_t)toPx(p.gy);
-                    p.dirX = 0; p.dirY = 0;
                 }
             }
 
@@ -853,7 +793,8 @@ private:
             const bool aNow = (bool)ctl->a();
             const bool aEdge = aNow && !p.lastA;
             p.lastA = aNow;
-            if (aEdge) plantBomb(p, now);
+            // Debounce bomb placement right after spawn/connect (prevents "random" bombs).
+            if (aEdge && (uint32_t)(now - p.spawnMs) > 250) plantBomb(p, now);
         }
     }
 
